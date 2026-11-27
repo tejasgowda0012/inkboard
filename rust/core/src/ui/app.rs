@@ -5677,7 +5677,78 @@ fn draw_empty_logo(p: &mut Painter, r: Rf) {
     }
 }
 
+/// Draws a raised panel. Its stacked shadow costs several blended passes
+/// over the panel's area, and panels are redrawn on every full frame (each
+/// pan or zoom step), so the finished panel is cached as a sprite and copied.
 fn draw_surface(p: &mut Painter, r: Rf, radius: f32, u: f32, level: u8, color: u32, border: bool) {
+    thread_local! {
+        static SPRITES: RefCell<HashMap<[u32; 10], Arc<tiny_skia::Pixmap>>> = RefCell::new(HashMap::new());
+    }
+    let pad = paint::elev_pad(u, level) + 2.0;
+    let (bx, by) = ((r.x - pad).floor(), (r.y - pad).floor());
+    let inner = Rf::new(r.x - bx, r.y - by, r.w, r.h);
+    let (sw, sh) = ((inner.x + r.w + pad).ceil() as u32, (inner.y + r.h + pad).ceil() as u32);
+    let key = [
+        inner.x.to_bits(),
+        inner.y.to_bits(),
+        r.w.to_bits(),
+        r.h.to_bits(),
+        radius.to_bits(),
+        u.to_bits(),
+        u32::from(level),
+        color,
+        u32::from(border),
+        sw,
+    ];
+    let sprite = SPRITES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(sprite) = cache.get(&key) {
+            return Some(sprite.clone());
+        }
+        let mut pm = tiny_skia::Pixmap::new(sw, sh)?;
+        draw_surface_direct(&mut Painter { pm: pm.as_mut(), ox: 0.0, oy: 0.0 }, inner, radius, u, level, color, border);
+        if cache.len() >= 64 {
+            cache.clear();
+        }
+        let pm = Arc::new(pm);
+        cache.insert(key, pm.clone());
+        Some(pm)
+    });
+    match sprite {
+        Some(sprite) => blend_sprite(&mut p.pm, &sprite, (bx - p.ox) as i32, (by - p.oy) as i32),
+        None => draw_surface_direct(p, r, radius, u, level, color, border),
+    }
+}
+
+/// Source-over of a premultiplied sprite onto `dst` at an integer offset.
+fn blend_sprite(dst: &mut PixmapMut<'_>, src: &tiny_skia::Pixmap, x: i32, y: i32) {
+    let (dw, dh) = (dst.width() as i32, dst.height() as i32);
+    let (sw, sh) = (src.width() as i32, src.height() as i32);
+    let (x0, y0, x1, y1) = (x.max(0), y.max(0), (x + sw).min(dw), (y + sh).min(dh));
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    let (s, d) = (src.data(), dst.data_mut());
+    let n = (x1 - x0) as usize * 4;
+    for row in y0..y1 {
+        let so = (((row - y) * sw + (x0 - x)) * 4) as usize;
+        let doff = ((row * dw + x0) * 4) as usize;
+        for (o, i) in d[doff..doff + n].chunks_exact_mut(4).zip(s[so..so + n].chunks_exact(4)) {
+            match i[3] {
+                0 => {}
+                255 => o.copy_from_slice(i),
+                a => {
+                    let keep = 255 - u32::from(a);
+                    for c in 0..4 {
+                        o[c] = (u32::from(i[c]) + (u32::from(o[c]) * keep + 127) / 255) as u8;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn draw_surface_direct(p: &mut Painter, r: Rf, radius: f32, u: f32, level: u8, color: u32, border: bool) {
     p.elev(r, radius, u, level);
     p.rrect(r, radius, color);
     if border {
