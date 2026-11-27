@@ -333,11 +333,18 @@ pub fn present(window: *mut ANativeWindow, frame: &Layer, dirty: IRect) -> Optio
             if (api.hb_lock)(b.hb, CPU_WRITE_OFTEN, -1, &rect, &mut ptr) != 0 || ptr.is_null() {
                 return Some(false);
             }
-            let n = (r.x1 - r.x0) as usize * 4;
-            for y in r.y0..r.y1 {
-                let s = (y as usize * frame.w as usize + r.x0 as usize) * 4;
-                let d = (ptr as *mut u8).add((y as usize * b.stride + r.x0 as usize) * 4);
-                std::ptr::copy_nonoverlapping(frame.data[s..s + n].as_ptr(), d, n);
+            if r.x0 == 0 && r.x1 == frame.w as i32 && b.stride == frame.w as usize {
+                let s = (r.y0 as usize * frame.w as usize) * 4;
+                let len = ((r.y1 - r.y0) as usize * frame.w as usize) * 4;
+                let d = (ptr as *mut u8).add(s);
+                std::ptr::copy_nonoverlapping(frame.data[s..s + len].as_ptr(), d, len);
+            } else {
+                let n = (r.x1 - r.x0) as usize * 4;
+                for y in r.y0..r.y1 {
+                    let s = (y as usize * frame.w as usize + r.x0 as usize) * 4;
+                    let d = (ptr as *mut u8).add((y as usize * b.stride + r.x0 as usize) * 4);
+                    std::ptr::copy_nonoverlapping(frame.data[s..s + n].as_ptr(), d, n);
+                }
             }
             let mut fence = -1;
             (api.hb_unlock)(b.hb, &mut fence);

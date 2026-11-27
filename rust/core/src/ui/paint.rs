@@ -446,36 +446,9 @@ impl<'a> Painter<'a> {
         }
     }
 
-    /// Inkboard's mark: a white board with a pen stroke, filling `r`.
+    /// Inkboard's canonical mark, filling `r`.
     pub fn logo(&mut self, r: Rf) {
-        let s = r.w / 108.0;
-        let tf = Transform::from_row(s, 0.0, 0.0, s, r.x - self.ox, r.y - self.oy);
-        if let Some(bg) = rrect_path(Rf::new(0.0, 0.0, 108.0, 108.0), 25.0) {
-            self.pm.fill_path(&bg, &paint(0xff6750d8), FillRule::Winding, tf, None);
-        }
-        let line = |width: f32| tiny_skia::Stroke {
-            width,
-            line_cap: tiny_skia::LineCap::Round,
-            line_join: tiny_skia::LineJoin::Round,
-            ..Default::default()
-        };
-        let mut legs = PathBuilder::new();
-        legs.move_to(40.0, 80.0);
-        legs.line_to(34.0, 92.0);
-        legs.move_to(68.0, 80.0);
-        legs.line_to(74.0, 92.0);
-        if let Some(legs) = legs.finish() {
-            self.pm.stroke_path(&legs, &paint(0xffffffff), &line(5.0), tf, None);
-        }
-        if let Some(board) = rrect_path(Rf::new(18.0, 24.0, 72.0, 58.0), 8.0) {
-            self.pm.fill_path(&board, &paint(0xffffffff), FillRule::Winding, tf, None);
-        }
-        let mut swoosh = PathBuilder::new();
-        swoosh.move_to(31.0, 64.0);
-        swoosh.cubic_to(42.0, 36.0, 58.0, 76.0, 77.0, 42.0);
-        if let Some(swoosh) = swoosh.finish() {
-            self.pm.stroke_path(&swoosh, &paint(0xff6750d8), &line(7.0), tf, None);
-        }
+        self.logo_accent(r, 0xff27_48e8);
     }
 
     /// Draws the accent-coloured Inkboard mark in a square centred within `r`.

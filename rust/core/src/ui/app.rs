@@ -1710,54 +1710,82 @@ impl App {
 
     fn compose(&mut self, r: IRect) {
         let (w, h) = (r.width() as u32, r.height() as u32);
-        let frame = self.ed.frame();
-        let mut buf =
-            if self.screen == Screen::Board && frame.w == self.out.w && frame.h == self.out.h {
-                frame.read(r)
-            } else {
-                let px = [(PAGE >> 16) as u8, (PAGE >> 8) as u8, PAGE as u8, 0xff];
-                px.repeat(w as usize * h as usize)
-            };
-        if let Some(mut target) = PixmapMut::from_bytes(&mut buf, w, h) {
-            let mut rest = self.nodes.as_slice();
-            while let Some(first) = rest.first() {
-                let count = rest
-                    .iter()
-                    .take_while(|n| n.clip == first.clip && n.opacity == first.opacity)
-                    .count();
-                let (group, tail) = rest.split_at(count);
-                rest = tail;
-                let area = first.clip.map_or(r, |clip| r.intersect(&clip));
-                if first.opacity == 0
-                    || area.is_empty()
-                    || !group.iter().any(|n| n.paint_bounds().intersects(&area))
-                {
-                    continue;
-                }
-                if area == r && first.opacity == 255 {
-                    if let Some(pm) = PixmapMut::from_bytes(target.data_mut(), w, h) {
-                        self.draw_nodes(pm, area, group);
+        let whole = r == self.out.bounds();
+        let mut out_data = if whole {
+            std::mem::take(&mut self.out.data)
+        } else {
+            Vec::new()
+        };
+        {
+            let frame = self.ed.frame();
+            let board_frame =
+                self.screen == Screen::Board && frame.w == self.out.w && frame.h == self.out.h;
+            let mut scratch = Vec::new();
+            let buf: &mut [u8] = if whole {
+                if board_frame {
+                    out_data.copy_from_slice(&frame.data);
+                } else {
+                    let px = [(PAGE >> 16) as u8, (PAGE >> 8) as u8, PAGE as u8, 0xff];
+                    for chunk in out_data.chunks_exact_mut(4) {
+                        chunk.copy_from_slice(&px);
                     }
-                } else if let Some(mut layer) =
-                    tiny_skia::Pixmap::new(area.width() as u32, area.height() as u32)
-                {
-                    self.draw_nodes(layer.as_mut(), area, group);
-                    let paint = tiny_skia::PixmapPaint {
-                        opacity: f32::from(first.opacity) / 255.0,
-                        ..Default::default()
-                    };
-                    target.draw_pixmap(
-                        area.x0 - r.x0,
-                        area.y0 - r.y0,
-                        layer.as_ref(),
-                        &paint,
-                        tiny_skia::Transform::identity(),
-                        None,
-                    );
+                }
+                &mut out_data
+            } else {
+                scratch = if board_frame {
+                    frame.read(r)
+                } else {
+                    let px = [(PAGE >> 16) as u8, (PAGE >> 8) as u8, PAGE as u8, 0xff];
+                    px.repeat(w as usize * h as usize)
+                };
+                &mut scratch
+            };
+            if let Some(mut target) = PixmapMut::from_bytes(buf, w, h) {
+                let mut rest = self.nodes.as_slice();
+                while let Some(first) = rest.first() {
+                    let count = rest
+                        .iter()
+                        .take_while(|n| n.clip == first.clip && n.opacity == first.opacity)
+                        .count();
+                    let (group, tail) = rest.split_at(count);
+                    rest = tail;
+                    let area = first.clip.map_or(r, |clip| r.intersect(&clip));
+                    if first.opacity == 0
+                        || area.is_empty()
+                        || !group.iter().any(|n| n.paint_bounds().intersects(&area))
+                    {
+                        continue;
+                    }
+                    if area == r && first.opacity == 255 {
+                        if let Some(pm) = PixmapMut::from_bytes(target.data_mut(), w, h) {
+                            self.draw_nodes(pm, area, group);
+                        }
+                    } else if let Some(mut layer) =
+                        tiny_skia::Pixmap::new(area.width() as u32, area.height() as u32)
+                    {
+                        self.draw_nodes(layer.as_mut(), area, group);
+                        let paint = tiny_skia::PixmapPaint {
+                            opacity: f32::from(first.opacity) / 255.0,
+                            ..Default::default()
+                        };
+                        target.draw_pixmap(
+                            area.x0 - r.x0,
+                            area.y0 - r.y0,
+                            layer.as_ref(),
+                            &paint,
+                            tiny_skia::Transform::identity(),
+                            None,
+                        );
+                    }
                 }
             }
+            if !whole {
+                self.out.write(r, &scratch);
+            }
         }
-        self.out.write(r, &buf);
+        if whole {
+            self.out.data = out_data;
+        }
     }
 
     fn draw_nodes(&self, pm: PixmapMut<'_>, area: IRect, nodes: &[Node]) {

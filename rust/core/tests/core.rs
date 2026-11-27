@@ -531,6 +531,53 @@ fn two_fingers_pinch_to_zoom_about_their_midpoint() {
 }
 
 #[test]
+fn two_finger_pan_with_spacing_jitter_scrolls_without_full_repaints() {
+    let mut e = editor();
+    e.set_grid(true);
+    drag(&mut e, &line(p(50., 50.), p(350., 250.), 20), 0);
+    e.render();
+    let before = e.full_repaints;
+    e.pointer_down(0, p(100., 150.), 1000);
+    e.pointer_down(1, p(220., 150.), 1020);
+    // Natural two-finger pan: fingers drift 120 px right with ±6 px spacing wobble.
+    for i in 1..=12u64 {
+        let shift = i as f64 * 10.0;
+        let wobble = if i % 2 == 0 { 6.0 } else { -5.0 };
+        e.pointer_move(0, p(100. + shift, 150. + shift * 0.3), 1020 + i * 16);
+        e.pointer_move(1, p(220. + shift + wobble, 150. + shift * 0.3), 1020 + i * 16);
+        assert!(e.render().is_some());
+    }
+    assert_eq!(e.zoom(), 1.0, "small spacing jitter stays locked to a pure pan");
+    assert_eq!(e.full_repaints, before, "two-finger pan slides the cached scene without full repaints");
+    e.pointer_up(0, p(220., 186.), 1300, false);
+    e.pointer_up(1, p(346., 186.), 1310, false);
+    e.render();
+    assert_matches_full_repaint(&mut e);
+}
+
+#[test]
+fn active_pinch_zoom_scales_snapshot_and_repaints_crisply_on_lift() {
+    let mut e = editor();
+    drag(&mut e, &line(p(50., 50.), p(350., 250.), 20), 0);
+    e.render();
+    let before = e.full_repaints;
+    e.pointer_down(0, p(150., 150.), 1000);
+    e.pointer_down(1, p(250., 150.), 1020);
+    for i in 1..=8u64 {
+        let d = i as f64 * 10.0;
+        e.pointer_move(0, p(150. - d, 150.), 1020 + i * 16);
+        e.pointer_move(1, p(250. + d, 150.), 1020 + i * 16);
+        assert!(e.render().is_some());
+    }
+    assert_eq!(e.full_repaints, before, "active pinch-zoom scales the cached snapshot");
+    e.pointer_up(0, p(70., 150.), 1200, false);
+    e.pointer_up(1, p(330., 150.), 1210, false);
+    assert!(e.render().is_some());
+    assert_eq!(e.full_repaints, before + 1, "one crisp full vector repaint after lift");
+    assert_matches_full_repaint(&mut e);
+}
+
+#[test]
 fn a_late_second_touch_does_not_interrupt_a_stroke() {
     let mut e = editor();
     e.pointer_down(0, p(50., 50.), 0);

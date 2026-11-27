@@ -1,29 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- TV banner: the Inkboard mark; the launcher shows the name. -->
+<!-- TV banner: the canonical Inkboard mark; the launcher shows the name. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="320dp"
     android:height="180dp"
     android:viewportWidth="320"
     android:viewportHeight="180">
     <path
-        android:fillColor="#6750d8"
+        android:fillColor="#2748e8"
         android:pathData="M0,0h320v180h-320z" />
-    <group android:translateX="83" android:translateY="13" android:scaleX="1.42" android:scaleY="1.42">
+    <group android:translateX="94" android:translateY="24" android:scaleX="2.357" android:scaleY="2.357">
         <path
             android:fillColor="#00000000"
-            android:pathData="M40,80 L34,92 M68,80 L74,92"
+            android:pathData="M12,36 L17,31 L23,36 L29,28 L36,32 L44,18"
             android:strokeColor="#ffffff"
             android:strokeLineCap="round"
-            android:strokeWidth="5" />
-        <path
-            android:fillColor="#ffffff"
-            android:pathData="M26,24 H82 A8,8 0 0 1 90,32 V74 A8,8 0 0 1 82,82 H26 A8,8 0 0 1 18,74 V32 A8,8 0 0 1 26,24 Z" />
-        <path
-            android:fillColor="#00000000"
-            android:pathData="M31,64 C42,36 58,76 77,42"
-            android:strokeColor="#6750d8"
-            android:strokeLineCap="round"
             android:strokeLineJoin="round"
-            android:strokeWidth="7" />
+            android:strokeWidth="5" />
     </group>
 </vector>

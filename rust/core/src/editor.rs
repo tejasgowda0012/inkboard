@@ -260,6 +260,11 @@ const PALM_BELOW: f64 = 12.0;
 /// A pair that lands together is decided after this long (ms) or travel.
 const PAIR_MS: u64 = 120;
 const PAIR_TRAVEL: f64 = 24.0;
+/// Minimum change in finger spacing (logical pixels) and relative scale before
+/// a two-finger gesture unlocks zoom; below this it stays a pure pan so the
+/// cached scene slides instead of repainting the whole screen.
+const PINCH_ZOOM_PX: f64 = 18.0;
+const PINCH_ZOOM_RATIO: f64 = 0.08;
 
 const EMPTY: IRect = IRect { x0: 0, y0: 0, x1: 0, y1: 0 };
 
@@ -316,6 +321,8 @@ pub struct Editor {
     start_zoom: f64,
     start_camera: Pt,
     pinch_distance: f64,
+    /// True once finger spacing changes past the deadzone during a two-finger gesture.
+    pinch_zooming: bool,
     /// Where the two pinch contacts first touched.
     pinch_origin: [Pt; 2],
     stylus: Option<i32>,
@@ -366,6 +373,8 @@ pub struct Editor {
     scene: Layer,
     frame: Layer,
     scene_view: Option<View>,
+    /// Cached scene snapshot scaled during an active pinch-zoom gesture.
+    pinch_snapshot: Option<(Layer, View)>,
     scene_damage: Vec<Rect>,
     damage: IRect,
     overlay_dirty: bool,
@@ -466,6 +475,7 @@ impl Editor {
             start_zoom: 1.0,
             start_camera: Pt::ZERO,
             pinch_distance: 1.0,
+            pinch_zooming: false,
             pinch_origin: [Pt::ZERO; 2],
             stylus: None,
             stylus_lifted: None,
@@ -503,6 +513,7 @@ impl Editor {
             scene: Layer::new(0, 0),
             frame: Layer::new(0, 0),
             scene_view: None,
+            pinch_snapshot: None,
             scene_damage: Vec::new(),
             damage: EMPTY,
             overlay_dirty: false,
@@ -625,12 +636,14 @@ impl Editor {
         self.dpr = if dpr.is_finite() && dpr > 0.0 { dpr } else { 1.0 };
         self.scene = Layer::new(w, h);
         self.frame = Layer::new(w, h);
+        self.pinch_snapshot = None;
         self.invalidate_all();
     }
 
     /// Forgets cached pixels, for example after the surface was recreated.
     pub fn invalidate_all(&mut self) {
         self.scene_view = None;
+        self.pinch_snapshot = None;
         self.overlay_dirty = true;
     }
 
@@ -1030,8 +1043,40 @@ impl Editor {
             self.ignored.push(e.pointer);
             self.damage_world(&e.bounds, self.width / 2.0);
         }
+        self.pinch_zooming = false;
+        self.end_pinch_preview();
         self.mode = Mode::None;
         self.primary = None;
+    }
+
+    fn end_pinch_preview(&mut self) {
+        if self.pinch_snapshot.take().is_some() {
+            self.damage = self.scene.bounds();
+            self.overlay_dirty = true;
+        }
+    }
+
+    fn update_pinch(&mut self) {
+        if self.pointers.len() < 2 {
+            return;
+        }
+        let (a, b) = (self.pointers[0].1, self.pointers[1].1);
+        let focal = (a + b) / 2.0;
+        let dist = a.dist(b);
+        if !self.pinch_zooming {
+            let delta = (dist - self.pinch_distance).abs();
+            let ratio = (dist / self.pinch_distance - 1.0).abs();
+            if delta >= PINCH_ZOOM_PX && ratio >= PINCH_ZOOM_RATIO {
+                self.pinch_zooming = true;
+            }
+        }
+        self.zoom = if self.pinch_zooming {
+            (self.start_zoom * dist / self.pinch_distance).clamp(0.1, 8.0)
+        } else {
+            self.start_zoom
+        };
+        self.camera = focal - self.anchor_world * self.zoom;
+        self.view_changed();
     }
 
     /// How far (logical pixels) an extra stroke has spread.
@@ -1164,6 +1209,8 @@ impl Editor {
             self.anchor_world = self.world((a + b) / 2.0);
             self.start_zoom = self.zoom;
             self.start_camera = self.camera;
+            self.pinch_zooming = false;
+            self.pinch_snapshot = None;
             self.pinch_origin = [a, b];
             self.mode = Mode::Pinch;
             return;
@@ -1273,12 +1320,11 @@ impl Editor {
             self.anchor_world = self.world((pa + pb) / 2.0);
             self.start_zoom = self.zoom;
             self.start_camera = self.camera;
+            self.pinch_zooming = false;
+            self.pinch_snapshot = None;
             self.pinch_origin = [pa, pb];
             self.mode = Mode::Pinch;
-            let (p, q) = (self.pointers[0].1, self.pointers[1].1);
-            self.zoom = (self.start_zoom * p.dist(q) / self.pinch_distance).clamp(0.1, 8.0);
-            self.camera = (p + q) / 2.0 - self.anchor_world * self.zoom;
-            self.view_changed();
+            self.update_pinch();
             return;
         }
         let last_y = |t: &(i32, Vec<(Pt, u64)>, f64)| t.1.last().map_or(0.0, |s| s.0.y);
@@ -1354,14 +1400,7 @@ impl Editor {
         let previous = slot.1;
         slot.1 = pos;
         if self.mode == Mode::Pinch {
-            if self.pointers.len() < 2 {
-                return;
-            }
-            let (a, b) = (self.pointers[0].1, self.pointers[1].1);
-            let focal = (a + b) / 2.0;
-            self.zoom = (self.start_zoom * a.dist(b) / self.pinch_distance).clamp(0.1, 8.0);
-            self.camera = focal - self.anchor_world * self.zoom;
-            self.view_changed();
+            self.update_pinch();
             return;
         }
         if Some(id) != self.primary {
@@ -1434,6 +1473,8 @@ impl Editor {
         };
         self.pointers.remove(i);
         if self.mode == Mode::Pinch {
+            self.pinch_zooming = false;
+            self.end_pinch_preview();
             self.mode = if self.pointers.is_empty() { Mode::None } else { Mode::Blocked };
             return;
         }
@@ -2408,6 +2449,23 @@ impl Editor {
             return None;
         }
         let view = self.view();
+        // During an active pinch-zoom, scale a snapshot of the cached scene
+        // instead of re-rasterising the whole board on every touch frame.
+        if self.mode == Mode::Pinch && self.scene_damage.is_empty() {
+            if let Some(old) = self.scene_view {
+                if old.zoom != view.zoom && old.dpr == view.dpr {
+                    let (snap, snap_view) = self
+                        .pinch_snapshot
+                        .get_or_insert_with(|| (self.scene.clone(), old));
+                    render::blit_scaled(&mut self.frame, snap, *snap_view, view);
+                    self.damage = EMPTY;
+                    self.overlay_dirty = false;
+                    return Some(full);
+                }
+            }
+        } else {
+            self.pinch_snapshot = None;
+        }
         // 1. Bring the cached scene to the current camera.
         match self.scene_view {
             Some(old) if old == view => {}
@@ -2423,15 +2481,18 @@ impl Editor {
                         self.scene.scroll(dx, dy);
                         let (w, h) = (full.x1, full.y1);
                         let mut strips = Vec::new();
+                        let (mut x0, mut x1) = (0, w);
                         if dx > 0 {
                             strips.push(IRect::new(0, 0, dx, h));
+                            x0 = dx;
                         } else if dx < 0 {
                             strips.push(IRect::new(w + dx, 0, w, h));
+                            x1 = w + dx;
                         }
                         if dy > 0 {
-                            strips.push(IRect::new(0, 0, w, dy));
+                            strips.push(IRect::new(x0, 0, x1, dy));
                         } else if dy < 0 {
-                            strips.push(IRect::new(0, h + dy, w, h));
+                            strips.push(IRect::new(x0, h + dy, x1, h));
                         }
                         for strip in strips {
                             Self::paint_scene(&mut self.scene, &self.doc, &self.hidden, view, self.grid, strip);

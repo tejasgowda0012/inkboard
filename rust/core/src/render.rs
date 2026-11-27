@@ -52,6 +52,7 @@ impl View {
 }
 
 /// A screen-sized RGBA8888 (premultiplied) pixel buffer.
+#[derive(Clone)]
 pub struct Layer {
     pub w: u32,
     pub h: u32,
@@ -85,6 +86,10 @@ impl Layer {
         }
     }
     pub fn copy_from(&mut self, src: &Layer, r: IRect) {
+        if r == self.bounds() && self.w == src.w && self.h == src.h {
+            self.data.copy_from_slice(&src.data);
+            return;
+        }
         for y in r.y0..r.y1 {
             let range = self.row(r.x0, y, r.width());
             self.data[range.clone()].copy_from_slice(&src.data[range]);
@@ -501,6 +506,8 @@ pub fn draw_background(t: &mut Target, grid: bool) {
     let first = |start: f64, low: i32| (((low - reach) as f64 - start) / spacing).floor() as i64;
     let last = |start: f64, high: i32| (((high + reach) as f64 - start) / spacing).ceil() as i64;
     let (w, h) = (r.width(), r.height());
+    let max_r = radius + 0.5;
+    let max_r2 = max_r * max_r;
     let dot = [(GRID_DOT >> 16) as u8 as f32, (GRID_DOT >> 8) as u8 as f32, GRID_DOT as u8 as f32];
     let data = t.pm.data_mut();
     for iy in first(start_y, r.y0)..=last(start_y, r.y1) {
@@ -508,12 +515,14 @@ pub fn draw_background(t: &mut Target, grid: bool) {
         for ix in first(start_x, r.x0)..=last(start_x, r.x1) {
             let cx = (start_x + ix as f64 * spacing).round() as i32 - r.x0;
             for y in (cy - reach).max(0)..(cy + reach + 1).min(h) {
+                let dy = y - cy;
                 for x in (cx - reach).max(0)..(cx + reach + 1).min(w) {
-                    let d = (((x - cx) * (x - cx) + (y - cy) * (y - cy)) as f64).sqrt();
-                    let cover = (radius + 0.5 - d).clamp(0.0, 1.0) as f32;
-                    if cover <= 0.0 {
+                    let dx = x - cx;
+                    let d2 = (dx * dx + dy * dy) as f64;
+                    if d2 >= max_r2 {
                         continue;
                     }
+                    let cover = (max_r - d2.sqrt()).clamp(0.0, 1.0) as f32;
                     let i = (y as usize * w as usize + x as usize) * 4;
                     for c in 0..3 {
                         let old = data[i + c] as f32;
@@ -523,6 +532,31 @@ pub fn draw_background(t: &mut Target, grid: bool) {
             }
         }
     }
+}
+
+/// Scales a cached snapshot into `dst` for fast live feedback during an active
+/// pinch-zoom gesture, avoiding a full vector repaint on every frame.
+pub fn blit_scaled(dst: &mut Layer, src: &Layer, src_view: View, dst_view: View) {
+    let bg = BACKGROUND;
+    let px = [(bg >> 16) as u8, (bg >> 8) as u8, bg as u8, 0xff];
+    for chunk in dst.data.chunks_exact_mut(4) {
+        chunk.copy_from_slice(&px);
+    }
+    let Some(mut pm) = PixmapMut::from_bytes(&mut dst.data, dst.w, dst.h) else { return };
+    let Some(src_pm) = tiny_skia::PixmapRef::from_bytes(&src.data, src.w, src.h) else { return };
+    let rel = dst_view.scale() / src_view.scale();
+    let (sox, soy) = src_view.offset_px();
+    let (dox, doy) = dst_view.offset_px();
+    let tf = Transform::from_row(
+        rel as f32,
+        0.0,
+        0.0,
+        rel as f32,
+        (dox - sox * rel) as f32,
+        (doy - soy * rel) as f32,
+    );
+    let paint = PixmapPaint { quality: FilterQuality::Nearest, ..PixmapPaint::default() };
+    pm.draw_pixmap(0, 0, src_pm, &paint, tf, None);
 }
 
 /// Renders shapes fitted into a `w` x `h` thumbnail (text is skipped when no
