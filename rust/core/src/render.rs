@@ -537,26 +537,39 @@ pub fn draw_background(t: &mut Target, grid: bool) {
 /// Scales a cached snapshot into `dst` for fast live feedback during an active
 /// pinch-zoom gesture, avoiding a full vector repaint on every frame.
 pub fn blit_scaled(dst: &mut Layer, src: &Layer, src_view: View, dst_view: View) {
+    // A plain nearest-neighbour copy: tiny-skia's transformed draw_pixmap
+    // costs 100-350 ms per 4K frame on the TV, this a few ms.
     let bg = BACKGROUND;
     let px = [(bg >> 16) as u8, (bg >> 8) as u8, bg as u8, 0xff];
-    for chunk in dst.data.chunks_exact_mut(4) {
-        chunk.copy_from_slice(&px);
+    let (sw, sh, dw) = (src.w as usize, src.h as usize, dst.w as usize);
+    if dw == 0 || src.data.len() < sw * sh * 4 {
+        return;
     }
-    let Some(mut pm) = PixmapMut::from_bytes(&mut dst.data, dst.w, dst.h) else { return };
-    let Some(src_pm) = tiny_skia::PixmapRef::from_bytes(&src.data, src.w, src.h) else { return };
     let rel = dst_view.scale() / src_view.scale();
     let (sox, soy) = src_view.offset_px();
     let (dox, doy) = dst_view.offset_px();
-    let tf = Transform::from_row(
-        rel as f32,
-        0.0,
-        0.0,
-        rel as f32,
-        (dox - sox * rel) as f32,
-        (doy - soy * rel) as f32,
-    );
-    let paint = PixmapPaint { quality: FilterQuality::Nearest, ..PixmapPaint::default() };
-    pm.draw_pixmap(0, 0, src_pm, &paint, tf, None);
+    // dst = src * rel + t, so src = (dst - t) / rel, sampled at pixel centres.
+    let (tx, ty) = (dox - sox * rel, doy - soy * rel);
+    let source = |d: usize, t: f64, len: usize| {
+        let s = ((d as f64 + 0.5 - t) / rel).floor();
+        (s >= 0.0 && s < len as f64).then_some(s as usize)
+    };
+    let cols: Vec<Option<usize>> = (0..dw).map(|x| source(x, tx, sw)).collect();
+    for (y, row) in dst.data.chunks_exact_mut(dw * 4).enumerate() {
+        let Some(sy) = source(y, ty, sh) else {
+            for out in row.chunks_exact_mut(4) {
+                out.copy_from_slice(&px);
+            }
+            continue;
+        };
+        let line = &src.data[sy * sw * 4..(sy + 1) * sw * 4];
+        for (out, col) in row.chunks_exact_mut(4).zip(&cols) {
+            match col {
+                Some(sx) => out.copy_from_slice(&line[sx * 4..sx * 4 + 4]),
+                None => out.copy_from_slice(&px),
+            }
+        }
+    }
 }
 
 /// Renders shapes fitted into a `w` x `h` thumbnail (text is skipped when no
